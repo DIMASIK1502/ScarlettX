@@ -453,15 +453,15 @@ def collect_concept_destruction_metrics() -> list[Subsystem]:
             name="Presentation & First Frame",
             short_name="Pres",
             category="Graphics",
-            implemented=4,
+            implemented=5,
             target=5,
-            notes="PresentX window on its own thread, real 1920x1080 frames; on a hardware GPU about 105 fps at 2,400 draws per frame; Alt+Enter toggles borderless fullscreen; the title's frame interval is ignored (uncapped)",
+            notes="PresentX window on its own thread, real 1920x1080 frames; on a hardware GPU about 105 fps at 2,400 draws per frame; Alt+Enter toggles borderless fullscreen; frames are paced to the title's interval, or to --fcap N",
         ),
         Subsystem(
             name="Audio & Input (Runtime)",
             short_name="Aud/In",
             category="Media",
-            implemented=3,
+            implemented=4,
             target=4,
             notes="Guest-facing XAudio2 objects forwarding to the host XAudio2 2.9, sound audible in play; GameInput polling verified for A, B, D-pad, left stick, right trigger, and with a real Xbox controller; rumble reaches the controller",
         ),
@@ -989,8 +989,8 @@ def main() -> None:
         badges=cd_badges,
         heading_prefix="Status of the game Concept Destruction",
         callout_lead="Open issues:",
-        callout_line1="Frame pacing is uncapped (the title's frame interval is not applied);",
-        callout_line2="CmdList slot 67 is unimplemented.",
+        callout_line1="CmdList slot 67 (FlushPipelineX) is unimplemented and",
+        callout_line2="XUserGetTokenAndSignatureAsync returns E_NOTIMPL.",
     )
 
     html_doc = render_html(subsystems, total_exports, tests_text, tests_ok)

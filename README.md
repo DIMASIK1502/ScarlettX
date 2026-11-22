@@ -16,7 +16,7 @@
 | ![Concept Destruction main menu running in ScarlettX](docs/image_00_01.png) | ![Concept Destruction gameplay running in ScarlettX](docs/image_00_02.png) |
 | Max FPS: 1189<br>Average FPS: 1082<br>Minimum FPS: 264 | Max FPS: 247<br>Average FPS: 188<br>Minimum FPS: 91 |
 
-**Emulator Status:** `66.6%` (281 of 422 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `87.0%` (40 of 46 bring-up milestones) · **Exports:** `269` · **Tests:** `25/25` passing · **Target:** `Xbox Series X|S (Gen9)`
+**Emulator Status:** `66.6%` (281 of 422 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `91.3%` (42 of 46 bring-up milestones) · **Exports:** `269` · **Tests:** `26/26` passing · **Target:** `Xbox Series X|S (Gen9)`
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
@@ -76,7 +76,7 @@ Testing against an unencrypted commercial Xbox Series X|S (`Scarlett`) Unity IL2
   - `XAudio2Create` returns guest-facing objects; the title creates its engine, mastering voice and a 48 kHz source voice and polls the play position, against a silent output (the first test machine has no audio device). On a machine with an audio device the title's sound is audible.
   - No `CmdList::Close` failure or device removal in gameplay runs.
   - On a hardware GPU (`--gpu`) the title plays at full speed: about 110 fps at 2,300 draw calls per frame and about 140 fps at 850, measured with `--stats`. An event ran from the countdown to the results screen. The software rasterizer of the first test machine managed about 2 to 3 fps.
-- **Known problems:** The fps figures in this README were measured before frame pacing existed; `--uncapped` gives the same behaviour.
+- **Known problems:** The fps figures in this README were measured before frame pacing existed; `--fcap 0` gives the same behaviour.
 - **Current classification:** **In-game** — **Concept Destruction** and **Unicorn Overlord** are playable on a hardware GPU; Alt+Enter toggles borderless fullscreen and controller rumble works.
 
 ### Current Limitations
@@ -127,7 +127,7 @@ ctest --test-dir build --output-on-failure
 scarlettx boot "<extracted package>\Mount" --in-process --gpu --stats
 ```
 
-- `--in-process` maps the title into the emulator process (the path used for real titles). `--gpu` renders on the hardware adapter, which is the default; `--warp` selects the software rasterizer. `--stats` prints fps and D3D12 call counts once per second, `--uncapped` ignores the title's frame interval, and `--trace` logs the shim calls.
+- `--in-process` maps the title into the emulator process (the path used for real titles). `--gpu` renders on the hardware adapter, which is the default; `--warp` selects the software rasterizer. `--stats` prints fps and D3D12 call counts once per second, `--fcap N` holds N frames per second instead of the title's own rate (for example `--fcap 144`; `--fcap 0` removes the cap), and `--trace` logs the shim calls.
 - Input: the keyboard while the window has focus (arrows = D-pad, WASD = left stick, IJKL = right stick, Enter/Space = A, Escape/Backspace = B, X = X, Y = Y, Q/E = shoulders, 1/3 = triggers, Tab = View, P = Menu), and the first XInput controller when one is connected (checked with an Xbox controller; rumble is forwarded to it).
 - The window does not close from its title bar; stop the emulator with Ctrl+C in its console.
 - Save data goes to `%TEMP%\scarlettx_saves`; set `SCARLETTX_SAVE_ROOT` to use another directory.

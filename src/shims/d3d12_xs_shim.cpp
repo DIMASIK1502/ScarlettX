@@ -3939,12 +3939,14 @@ std::atomic<uint64_t> g_frame_pipeline_token{1};
 // Blocks until the next frame origin, one interval after the previous one.
 void WaitForFrameOrigin() {
 #if defined(_WIN32)
-    static const bool uncapped = [] {
-        const char* v = std::getenv("SCARLETTX_UNCAPPED");
-        return v && v[0] != '\0' && v[0] != '0';
+    // --fcap: a frame rate to hold instead of the title's, 0 for no cap.
+    static const long fcap = [] {
+        const char* v = std::getenv("SCARLETTX_FCAP");
+        return v && v[0] != '\0' ? std::strtol(v, nullptr, 10) : -1L;
     }();
-    const uint32_t interval_us = g_frame_interval_us.load(std::memory_order_relaxed);
-    if (uncapped || interval_us == 0) return;
+    const uint32_t interval_us = fcap > 0 ? static_cast<uint32_t>(1000000 / fcap)
+                                          : g_frame_interval_us.load(std::memory_order_relaxed);
+    if (fcap == 0 || interval_us == 0) return;
 
     static std::mutex mu;
     static int64_t next = 0;
