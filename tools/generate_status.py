@@ -252,7 +252,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             short_name="Save",
             category="xgameruntime",
             implemented=xgamesave_cnt,
-            target=22,
+            target=30,
             notes=f"{xgamesave_cnt} exports; disk-backed containers, sync/async blob R/W, quota, delete",
         ),
         Subsystem(
@@ -306,7 +306,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             short_name="Audio",
             category="Media",
             implemented=xa_cnt,
-            target=32,
+            target=42,
             notes=(
                 f"{xa_cnt} exports (XAudio2_9 ordinal #1 + AcpHal.dll APU/SHAPE shims); "
                 "headless PCM mixer, WAV writer, fail-closed real-title COM guard, synthetic XMA2 test decoder"
@@ -447,7 +447,7 @@ def collect_concept_destruction_metrics() -> list[Subsystem]:
             category="Graphics",
             implemented=8,
             target=10,
-            notes="Command lists run through gameplay with no Close failure or device removal; slot 83 handled as a texture-region copy (name unverified), slot 67 still E_NOTIMPL",
+            notes="Command lists run through gameplay with no Close failure or device removal; slot 83 is CopyTextureRegionX, the texture upload; slot 67 (FlushPipelineX) still E_NOTIMPL",
         ),
         Subsystem(
             name="Presentation & First Frame",

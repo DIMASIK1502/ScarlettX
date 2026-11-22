@@ -2,14 +2,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -126,11 +129,13 @@ struct XUser {
 // ---------------------------------------------------------------------------
 // XGameSave implementation (real persistent local-disk containers & blobs)
 // ---------------------------------------------------------------------------
+constexpr uint64_t kSaveQuotaBytes = 256ull * 1024ull * 1024ull;  // 256 MiB
+
 struct XGameSaveProvider {
     std::atomic<int32_t> ref_count{1};
     std::string config_id;
     fs::path root_dir;
-    uint64_t max_quota_bytes = 256ull * 1024ull * 1024ull;  // 256 MiB
+    uint64_t max_quota_bytes = kSaveQuotaBytes;
     std::mutex mutex;
 };
 
@@ -188,6 +193,91 @@ uint64_t ComputeDirectorySize(const fs::path& dir) {
         }
     }
     return total;
+}
+
+// ---------------------------------------------------------------------------
+// XPackage locale
+// ---------------------------------------------------------------------------
+std::string HostLocaleName() {
+#if defined(_WIN32)
+    wchar_t wide[LOCALE_NAME_MAX_LENGTH] = {};
+    if (GetUserDefaultLocaleName(wide, LOCALE_NAME_MAX_LENGTH) > 0) {
+        std::string name;
+        for (const wchar_t* p = wide; *p; ++p) {
+            name.push_back(static_cast<char>(*p));  // locale names are ASCII
+        }
+        if (!name.empty()) {
+            return name;
+        }
+    }
+#endif
+    return "en-US";
+}
+
+// The languages MicrosoftGame.config declares, in file order.
+std::vector<std::string> PackageLanguages() {
+    std::vector<std::string> languages;
+    const char* root = std::getenv("SCARLETTX_PACKAGE_ROOT");
+    if (!root || !*root) {
+        return languages;
+    }
+    std::string xml;
+    for (const char* name : {"MicrosoftGame.Config", "MicrosoftGame.config"}) {
+        std::ifstream in(fs::path(root) / name, std::ios::binary);
+        if (in) {
+            xml.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            break;
+        }
+    }
+    // The template's commented-out examples are not declarations.
+    for (size_t open; (open = xml.find("<!--")) != std::string::npos;) {
+        const size_t close = xml.find("-->", open + 4);
+        xml.erase(open, close == std::string::npos ? std::string::npos : close + 3 - open);
+    }
+    for (size_t pos = 0; (pos = xml.find("<Resource", pos)) != std::string::npos;) {
+        pos += 9;
+        const size_t end = xml.find('>', pos);
+        if (end == std::string::npos) {
+            break;
+        }
+        if (!std::isspace(static_cast<unsigned char>(xml[pos]))) {
+            continue;  // <Resources>
+        }
+        const std::string tag = xml.substr(pos, end - pos);
+        const size_t attr = tag.find("Language");
+        const size_t quote = attr == std::string::npos ? attr : tag.find_first_of("\"'", attr);
+        const size_t close = quote == std::string::npos ? quote : tag.find(tag[quote], quote + 1);
+        if (close != std::string::npos) {
+            languages.push_back(tag.substr(quote + 1, close - quote - 1));
+        }
+    }
+    return languages;
+}
+
+bool SameText(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           });
+}
+
+// The declared language that serves `locale`: the same name, else the same
+// language of another region, else the package's first language.
+std::string MatchPackageLanguage(const std::string& locale, const std::vector<std::string>& languages) {
+    if (languages.empty()) {
+        return locale;
+    }
+    for (const auto& language : languages) {
+        if (SameText(language, locale)) {
+            return language;
+        }
+    }
+    const std::string primary = locale.substr(0, locale.find('-'));
+    for (const auto& language : languages) {
+        if (SameText(language.substr(0, language.find('-')), primary)) {
+            return language;
+        }
+    }
+    return languages.front();
 }
 
 // ---------------------------------------------------------------------------
@@ -994,6 +1084,90 @@ XGameResult XGameSaveEnumerateBlobInfo(
 }
 
 // ===========================================================================
+// XGameSaveFiles.h
+// ===========================================================================
+// The folder is the configuration's save directory itself: a title uses
+// either containers or plain files, never both.
+XGameResult XGameSaveFilesGetFolderWithUiAsync(
+    XUserHandle requestingUser,
+    const char* configurationId,
+    XAsyncBlock* async) {
+    if (!requestingUser || !configurationId || !*configurationId || !async) {
+        return XGR_E_INVALIDARG;
+    }
+    std::string cfg = configurationId;
+    return BeginAsyncOperation(async, [cfg](XAsyncState* st) {
+        std::string folder;
+        try {
+            const fs::path dir = fs::absolute(ResolveSaveRoot(cfg)).make_preferred();
+            fs::create_directories(dir);
+            folder = dir.string();
+        } catch (const std::exception&) {
+            CompleteAsyncState(st, XGR_E_FAIL, 0);
+            return;
+        }
+        st->result_payload.assign(folder.c_str(), folder.c_str() + folder.size() + 1);
+        CompleteAsyncState(st, XGR_S_OK, st->result_payload.size());
+    });
+}
+
+XGameResult XGameSaveFilesGetFolderWithUiResult(
+    XAsyncBlock* async,
+    size_t folderSize,
+    char* folderResult) {
+    if (!async || !folderResult) {
+        return XGR_E_INVALIDARG;
+    }
+    // As on the console, an operation that has not finished is E_PENDING.
+    XGameResult hr = XAsyncGetStatus(async, false);
+    if (hr != XGR_S_OK) {
+        return hr;
+    }
+    auto state = GetAsyncState(async);
+    if (!state || state->result_payload.empty()) {
+        return XGR_E_FAIL;
+    }
+    if (folderSize < state->result_payload.size()) {
+        return XGR_E_GS_PROVIDED_BUFFER_TOO_SMALL;
+    }
+    std::memcpy(folderResult, state->result_payload.data(), state->result_payload.size());
+    xgr::ReleaseHleAsyncResult(async);
+    return XGR_S_OK;
+}
+
+XGameResult XGameSaveFilesGetRemainingQuota(
+    XUserHandle userContext,
+    const char* configurationId,
+    int64_t* remainingQuota) {
+    if (!remainingQuota) {
+        return XGR_E_INVALIDARG;
+    }
+    *remainingQuota = 0;
+    if (!userContext || !configurationId || !*configurationId) {
+        return XGR_E_INVALIDARG;
+    }
+    const uint64_t used = ComputeDirectorySize(ResolveSaveRoot(configurationId));
+    *remainingQuota = used >= kSaveQuotaBytes ? 0 : static_cast<int64_t>(kSaveQuotaBytes - used);
+    return XGR_S_OK;
+}
+
+// ===========================================================================
+// XPackage.h
+// ===========================================================================
+XGameResult XPackageGetUserLocale(size_t localeSize, char* locale) {
+    if (!locale) {
+        return XGR_E_POINTER;
+    }
+    std::string name;
+    if (const char* forced = std::getenv("SCARLETTX_LOCALE"); forced && *forced) {
+        name = forced;
+    } else {
+        name = MatchPackageLanguage(HostLocaleName(), PackageLanguages());
+    }
+    return CopyStringToBuffer(name, localeSize, locale, nullptr);
+}
+
+// ===========================================================================
 // XMem.h
 // ===========================================================================
 void* XMemAllocDefault(size_t dwSize, uint64_t /*dwAttributes*/) {
@@ -1056,20 +1230,46 @@ XGameResult XMemGetAllocationHooks(
 }
 
 void* XMemVirtualAlloc(
-    void* baseAddress,
-    size_t size,
-    uint32_t allocationType,
-    uint32_t protect) {
+    void* lpAddress,
+    size_t dwSize,
+    uint32_t flAllocationType,
+    uint64_t /*dwXMemFlags*/,
+    uint32_t flProtect) {
 #if defined(_WIN32)
-    DWORD flAlloc = allocationType ? static_cast<DWORD>(allocationType)
-                                   : (MEM_RESERVE | MEM_COMMIT);
-    DWORD flProtect = protect ? static_cast<DWORD>(protect) : PAGE_READWRITE;
-    return VirtualAlloc(baseAddress, size, flAlloc, flProtect);
+    // On the console MEM_LARGE_PAGES selects 2 MB pages, and 64 KB pages when
+    // combined with 0x00400000. The host needs a privilege for large pages,
+    // so both get normal pages with that size rounding and alignment.
+    constexpr DWORD kPageSizeBits = 0x20400000u;
+    size_t page = 0x1000;
+    if ((flAllocationType & kPageSizeBits) == kPageSizeBits) {
+        page = 0x10000;
+    } else if (flAllocationType & 0x20000000u) {
+        page = 0x200000;
+    }
+    DWORD flAlloc = static_cast<DWORD>(flAllocationType) & ~kPageSizeBits;
+    if (flAlloc == 0) flAlloc = MEM_RESERVE | MEM_COMMIT;
+    if (!lpAddress && (flAlloc & MEM_COMMIT)) flAlloc |= MEM_RESERVE;
+    const DWORD protect = flProtect ? static_cast<DWORD>(flProtect) : PAGE_READWRITE;
+    const size_t size = (dwSize + page - 1) & ~(page - 1);
+    if (lpAddress || page <= 0x10000) {
+        return VirtualAlloc(lpAddress, size, flAlloc, protect);
+    }
+    // No address and more than the host's 64 KB granularity: find a free
+    // range, then claim its aligned part. Another thread can take it in
+    // between, hence the retries.
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        void* probe = VirtualAlloc(nullptr, size + page, MEM_RESERVE, PAGE_NOACCESS);
+        if (!probe) return nullptr;
+        VirtualFree(probe, 0, MEM_RELEASE);
+        const uintptr_t aligned = (reinterpret_cast<uintptr_t>(probe) + page - 1) & ~(page - 1);
+        if (void* p = VirtualAlloc(reinterpret_cast<void*>(aligned), size, flAlloc, protect)) return p;
+    }
+    return nullptr;
 #else
-    (void)baseAddress;
-    (void)allocationType;
-    (void)protect;
-    return std::calloc(1, size == 0 ? 4096 : size);
+    (void)lpAddress;
+    (void)flAllocationType;
+    (void)flProtect;
+    return std::calloc(1, dwSize == 0 ? 4096 : dwSize);
 #endif
 }
 
@@ -1375,6 +1575,11 @@ const XgrApiImpl073B7DCBVtable kApiImpl073B7DCBVtable = {{
 //   +0x88 (slot 17): (this, uint64_t token, uint8_t flag) -> bool/u8
 constexpr XgrGuid kGuidApiImpl37E56907 = {
     0x37E56907u, 0x2F10u, 0x41E8u, {0xB7, 0x2F, 0x36, 0xED, 0xB1, 0x85, 0x33, 0x1A}};
+// Interface id a title built against a later GDK asks this API for. Its
+// calls to slots 15, 16 and 17 pass the same arguments; it also calls
+// slots 8, 9, 10 and 14, which have no implementation here.
+constexpr XgrGuid kGuidApiImpl37E56907Later = {
+    0xBF2346B2u, 0x39AFu, 0x4658u, {0xB5, 0xEA, 0x44, 0x71, 0x3C, 0x7E, 0x83, 0xB3}};
 
 struct XgrApiImpl37E56907Vtable {
     void* slots[24];
@@ -1398,7 +1603,8 @@ XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_QueryInterface(
     if (!self_ptr || !riid) {
         return XGR_E_INVALIDARG;
     }
-    if (GuidEquals(riid, kGuidApiImpl37E56907) || GuidEquals(riid, kIidIUnknown)) {
+    if (GuidEquals(riid, kGuidApiImpl37E56907) || GuidEquals(riid, kGuidApiImpl37E56907Later) ||
+        GuidEquals(riid, kIidIUnknown)) {
         auto* self = static_cast<XgrApiImpl37E56907*>(self_ptr);
         self->ref_count.fetch_add(1, std::memory_order_relaxed);
         *ppv = self;
@@ -1607,7 +1813,8 @@ XGameResult QueryApiImpl(const void* api_id, const void* riid, void** out_impl) 
     }
 
     if (GuidEquals(api_id, kGuidApiImpl37E56907) &&
-        (GuidEquals(riid, kGuidApiImpl37E56907) || GuidEquals(riid, kIidIUnknown))) {
+        (GuidEquals(riid, kGuidApiImpl37E56907) || GuidEquals(riid, kGuidApiImpl37E56907Later) ||
+         GuidEquals(riid, kIidIUnknown))) {
         auto* impl = new (std::nothrow) XgrApiImpl37E56907();
         if (!impl) {
             return XGR_E_OUTOFMEMORY;
@@ -1634,7 +1841,16 @@ XGameResult QueryApiImpl(const void* api_id, const void* riid, void** out_impl) 
         return XGR_S_OK;
     }
 
-    if (TraceEnabled()) {
+    // A title often waits forever on an API it cannot get, so the first
+    // request for each missing table is reported even without --trace.
+    static std::mutex missing_mutex;
+    static std::unordered_set<std::string> missing;
+    bool first = false;
+    {
+        std::lock_guard<std::mutex> lock(missing_mutex);
+        first = missing.insert(std::string(api_str) + iid_str).second;
+    }
+    if (first || TraceEnabled()) {
         std::fprintf(stderr,
                      "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> E_NOINTERFACE\n",
                      api_str, iid_str);

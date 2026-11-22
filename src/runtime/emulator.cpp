@@ -112,7 +112,8 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     struct VirtualDriveGuard {
         ~VirtualDriveGuard() { vfs::UnmapPackageDrive(); }
     } g_drive_guard;
-    if (vfs::MapPackageDrive('G', abs_pkg_dir)) {
+    const bool drive_mapped = vfs::MapPackageDrive('G', abs_pkg_dir);
+    if (drive_mapped) {
         std::cout << "[ScarlettX][vfs] Mapped virtual G:\\ -> " << abs_pkg_dir << "\n";
     }
 
@@ -166,6 +167,8 @@ Status Emulator::BootPackage(const std::string& package_dir) {
             call_st = image.CallExportedEntry(config_.in_process_entry, exit_code);
         } else {
             set_env("SCARLETTX_REAL_TITLE", "1");
+            // A title's relative paths start at its package root, as on the console.
+            SetCurrentDirectoryA(drive_mapped ? "G:\\" : abs_pkg_dir.c_str());
             std::cout << "[ScarlettX][loader] Entering native PE entry point at "
                       << image.EntryPointAddress() << std::endl;
             call_st = image.CallEntryPoint(exit_code);
@@ -187,6 +190,9 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     std::string cmd = "\"" + report.executable_path + "\"";
     std::string work_dir = std::filesystem::path(report.executable_path).parent_path().string();
 
+    // The guest inherits this: if it cannot load it must end with an exit
+    // code instead of waiting on a system error dialog.
+    const UINT previous_error_mode = SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     // Searched before System32 and inherited by the child; PATH is not.
     if (!shim_dir.empty()) {
         SetDllDirectoryA(shim_dir.c_str());
@@ -196,6 +202,7 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     if (!shim_dir.empty()) {
         SetDllDirectoryA(nullptr);
     }
+    SetErrorMode(previous_error_mode);
     if (!created) {
         return Status::Error(StatusCode::DeviceError,
                              "CreateProcessA failed for guest executable: " + report.executable_path);

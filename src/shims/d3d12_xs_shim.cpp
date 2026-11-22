@@ -248,6 +248,57 @@ constexpr ProxyGuid kIidIDXGIAdapter = {
     0x2411E7E1u, 0x12ACu, 0x4CCFu, {0xBD, 0x14, 0x97, 0x98, 0xE8, 0x53, 0x4D, 0xC0}};
 constexpr ProxyGuid kIidIDXGIAdapter1 = {
     0x29038F61u, 0x3839u, 0x4626u, {0x91, 0xFD, 0x08, 0x68, 0x79, 0x01, 0x1A, 0x05}};
+constexpr ProxyGuid kIidIDXGIDevice1 = {
+    0x77DB970Fu, 0x6276u, 0x48BAu, {0xBA, 0x28, 0x07, 0x01, 0x43, 0xB4, 0x39, 0x2C}};
+
+// A title gets its output from IDXGIAdapter::EnumOutputs only to hand it to
+// SetFrameIntervalX, so the output is an identity with a reference count.
+struct XboxDXGIOutputProxy {
+    const ComVtableFn* lpVtbl;
+    std::atomic<uint32_t> ref_count{1};
+};
+
+intptr_t SCARLETTX_GDK_CALLBACK OutputProxyQueryInterface(void* self, uintptr_t, uintptr_t ppv, uintptr_t) {
+    auto** out = reinterpret_cast<void**>(ppv);
+    if (!out) return static_cast<intptr_t>(0x80004003u);
+    static_cast<XboxDXGIOutputProxy*>(self)->ref_count.fetch_add(1, std::memory_order_relaxed);
+    *out = self;
+    return 0;
+}
+
+intptr_t SCARLETTX_GDK_CALLBACK OutputProxyAddRef(void* self, uintptr_t, uintptr_t, uintptr_t) {
+    return static_cast<intptr_t>(
+        static_cast<XboxDXGIOutputProxy*>(self)->ref_count.fetch_add(1, std::memory_order_relaxed) + 1);
+}
+
+intptr_t SCARLETTX_GDK_CALLBACK OutputProxyRelease(void* self, uintptr_t, uintptr_t, uintptr_t) {
+    auto* obj = static_cast<XboxDXGIOutputProxy*>(self);
+    const uint32_t rem = obj->ref_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (rem == 0) delete obj;
+    return static_cast<intptr_t>(rem);
+}
+
+template <int Slot>
+intptr_t SCARLETTX_GDK_CALLBACK OutputProxyTracedSlot(void* /*self*/, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][d3d12_xs] XboxIDXGIOutput::vtable[" << Slot
+                  << "](a1=0x" << std::hex << a1 << ", a2=0x" << a2 << ", a3=0x" << a3
+                  << std::dec << ") -> E_NOTIMPL\n";
+    }
+    return static_cast<intptr_t>(static_cast<int32_t>(0x80004001u));
+}
+
+template <size_t... Is>
+constexpr std::array<ComVtableFn, sizeof...(Is) + 3> MakeOutputProxyVtable(std::index_sequence<Is...>) {
+    return {
+        &OutputProxyQueryInterface,
+        &OutputProxyAddRef,
+        &OutputProxyRelease,
+        &OutputProxyTracedSlot<static_cast<int>(Is + 3)>...,
+    };
+}
+
+const auto kXboxDXGIOutputProxyVtbl = MakeOutputProxyVtable(std::make_index_sequence<21>{});
 
 struct XboxDXGIAdapterProxy {
     const ComVtableFn* lpVtbl;
@@ -310,6 +361,18 @@ intptr_t SCARLETTX_GDK_CALLBACK AdapterProxyGetDesc1(void* self, uintptr_t pDesc
     return static_cast<intptr_t>(static_cast<int32_t>(0x80004001u));
 }
 
+// IDXGIAdapter::EnumOutputs (+0x38), observed at 0x1404f5290 in a title: one output.
+intptr_t SCARLETTX_GDK_CALLBACK AdapterProxyEnumOutputs(void* /*self*/, uintptr_t index, uintptr_t ppOutput, uintptr_t) {
+    auto** out = reinterpret_cast<void**>(ppOutput);
+    if (!out) return static_cast<intptr_t>(0x80004003u);
+    *out = nullptr;
+    if (static_cast<uint32_t>(index) != 0) return static_cast<intptr_t>(static_cast<int32_t>(0x887A0002u));
+    auto* output = new XboxDXGIOutputProxy();
+    output->lpVtbl = kXboxDXGIOutputProxyVtbl.data();
+    *out = output;
+    return 0;
+}
+
 template <int Slot>
 intptr_t SCARLETTX_GDK_CALLBACK AdapterProxyTracedSlot(void* /*self*/, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
     if (TraceEnabled()) {
@@ -332,6 +395,7 @@ constexpr std::array<ComVtableFn, sizeof...(Is) + 3> MakeAdapterProxyVtable(std:
 
 std::array<ComVtableFn, 24> BuildAdapterProxyVtable() {
     auto vtbl = MakeAdapterProxyVtable(std::make_index_sequence<21>{});
+    vtbl[7] = &AdapterProxyEnumOutputs;
     vtbl[8] = &AdapterProxyGetDesc;
     vtbl[10] = &AdapterProxyGetDesc1;
     return vtbl;
@@ -712,6 +776,7 @@ struct XboxD3D12ResourceProxy {
     bool promoted_typeless = false;
     GuestTextureMemory* guest_memory = nullptr;
 #endif
+    void* device = nullptr;  // the XboxD3D12DeviceProxy that created it, referenced
 };
 #if defined(_WIN32)
 // Textures the title fills through the address returned by
@@ -1067,9 +1132,21 @@ intptr_t SCARLETTX_GDK_CALLBACK ResProxyRelease(void* self, uintptr_t, uintptr_t
         ReleaseGuestTextureMemory(obj);
         if (obj->pc_res) obj->pc_res->Release();
 #endif
+        if (obj->device) (*static_cast<const ComVtableFn* const*>(obj->device))[2](obj->device, 0, 0, 0);
         delete obj;
     }
     return static_cast<intptr_t>(rem);
+}
+// ID3D12DeviceChild::GetDevice (+0x38), observed at 0x14052510b in a title.
+intptr_t SCARLETTX_GDK_CALLBACK ResProxyGetDevice(void* self, uintptr_t /*riid*/, uintptr_t ppDevice, uintptr_t) {
+    auto* obj = static_cast<XboxD3D12ResourceProxy*>(self);
+    auto** out = reinterpret_cast<void**>(ppDevice);
+    if (!out) return static_cast<intptr_t>(0x80004003u);
+    *out = nullptr;
+    if (!obj->device) return static_cast<intptr_t>(static_cast<int32_t>(0x80004005u));
+    (*static_cast<const ComVtableFn* const*>(obj->device))[1](obj->device, 0, 0, 0);
+    *out = obj->device;
+    return 0;
 }
 intptr_t SCARLETTX_GDK_CALLBACK ResProxySetName(void* self, uintptr_t name_ptr, uintptr_t, uintptr_t) {
 #if defined(_WIN32)
@@ -1136,6 +1213,7 @@ constexpr std::array<ComVtableFn, sizeof...(Is) + 3> MakeResProxyVtable(std::ind
 std::array<ComVtableFn, 24> BuildResProxyVtable() {
     auto vtbl = MakeResProxyVtable(std::make_index_sequence<21>{});
     vtbl[6] = &ResProxySetName;
+    vtbl[7] = &ResProxyGetDevice;
     vtbl[8] = &ResProxyMap;
     vtbl[9] = &ResProxyUnmap;
     vtbl[10] = &ResProxyGetDesc;
@@ -1259,6 +1337,10 @@ intptr_t SCARLETTX_GDK_CALLBACK CmdListSetDescriptorHeaps(void* self, uintptr_t 
 }
 D3D12_RESOURCE_STATES SanitizePcResourceState(D3D12_RESOURCE_STATES state, D3D12_RESOURCE_DIMENSION dim) {
     uint32_t s = static_cast<uint32_t>(state);
+    // A title built against SDK version 0x20004 keeps its display target in state 0x100000
+    // between frames (created in it, back to it before PresentX). The host has no such state;
+    // its equivalent is PRESENT, which is 0.
+    s &= ~0x100000u;
     if (dim != D3D12_RESOURCE_DIMENSION_BUFFER) {
         // Buffer-only states are invalid on textures in PC D3D12 (Xbox passes 0x8c3 on textures).
         s &= ~(static_cast<uint32_t>(D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER) |
@@ -1964,9 +2046,9 @@ std::array<ComVtableFn, 96> BuildCmdListVtable() {
     vtbl[14] = &CmdListDispatch;
     vtbl[15] = reinterpret_cast<ComVtableFn>(&CmdListCopyBufferRegion);
     vtbl[16] = reinterpret_cast<ComVtableFn>(&CmdListCopyTextureRegion);
-    // Slot 83 (+0x298), name not verified: the title calls it with the argument
-    // list of slot 16 plus one trailing 32-bit value (0 at every observed call)
-    // to upload its larger textures.
+    // Slot 83 (+0x298) is CopyTextureRegionX: the argument list of slot 16
+    // plus copy flags (0 at every observed call). Titles upload textures
+    // with it.
     vtbl[83] = reinterpret_cast<ComVtableFn>(&CmdListCopyTextureRegion);
     vtbl[17] = &CmdListCopyResource;
     vtbl[20] = &CmdListIASetPrimitiveTopology;
@@ -2003,6 +2085,21 @@ std::array<ComVtableFn, 96> BuildCmdListVtable() {
     return vtbl;
 }
 const auto kXboxCmdListProxyVtbl = BuildCmdListVtable();
+// A later SDK (D3D12XboxCreateDevice version 0x20004) added two methods at
+// slots 59 and 60, so each method after them sits two slots further on:
+// CopyTextureRegionX is slot 85. Checked against the method names in the
+// debug driver each SDK's titles ship with.
+std::array<ComVtableFn, 96> BuildCmdListVtableV4() {
+    const auto older = BuildCmdListVtable();
+    const auto unnamed = MakeCmdListVtable(std::make_index_sequence<93>{});
+    auto vtbl = older;
+    for (size_t slot = 59; slot < vtbl.size(); ++slot) {
+        const bool named = slot >= 61 && older[slot - 2] != unnamed[slot - 2];
+        vtbl[slot] = named ? older[slot - 2] : unnamed[slot];
+    }
+    return vtbl;
+}
+const auto kXboxCmdListProxyVtblV4 = BuildCmdListVtableV4();
 std::array<ComVtableFn, 96> BuildDmaCmdListVtable() {
     auto vtbl = MakeCmdListVtable(std::make_index_sequence<93>{});
     vtbl[6] = &CmdListSetName;
@@ -2133,7 +2230,7 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyExecuteCommandLists(
         // submit of the frame. Every-submit flushing rescanned every texture
         // for every command list the title queued.
         const uint64_t epoch = g_frame_epoch.load(std::memory_order_relaxed);
-        if (g_flushed_epoch.load(std::memory_order_relaxed) != epoch) {
+        if (epoch == 0 || g_flushed_epoch.load(std::memory_order_relaxed) != epoch) {
             LARGE_INTEGER freq{}, start{}, end{};
             QueryPerformanceFrequency(&freq);
             QueryPerformanceCounter(&start);
@@ -2604,7 +2701,17 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                 if (SUCCEEDED(obj->present_list->Close())) {
                     ID3D12CommandList* lists[] = {obj->present_list};
                     obj->pc_queue->ExecuteCommandLists(1, lists);
-                    obj->swapchain->Present(0, 0);
+                    const HRESULT present_hr = obj->swapchain->Present(0, 0);
+                    if (present_hr != S_OK) {
+                        // The game keeps running when the output is lost, so say so.
+                        static std::atomic<uint64_t> not_ok{0};
+                        const uint64_t k = not_ok.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (k == 1 || (k % 1000) == 0) {
+                            std::cerr << "[ScarlettX][d3d12_xs] Present returned 0x" << std::hex
+                                      << static_cast<uint32_t>(present_hr) << std::dec << " (frame " << n << ", "
+                                      << k << " so far)\n";
+                        }
+                    }
                     const uint64_t val = ++obj->present_fence_val;
                     obj->pc_queue->Signal(obj->present_fence, val);
                 }
@@ -2663,9 +2770,24 @@ std::array<ComVtableFn, 64> BuildQueueProxyVtable() {
 
 const auto kXboxCommandQueueProxyVtbl = BuildQueueProxyVtable();
 
+// Titles built against a later SDK (D3D12XboxCreateDevice version 0x20004,
+// against 0x20001 for the table above) find two more methods ahead of
+// Signal. Only the slots a title was seen calling have a name here.
+std::array<ComVtableFn, 64> BuildQueueProxyVtableV4() {
+    auto vtbl = MakeQueueProxyVtable(std::make_index_sequence<61>{});
+    vtbl[6] = &QueueProxySetName;
+    vtbl[10] = &QueueProxyExecuteCommandLists;
+    vtbl[16] = &QueueProxySignal;    // +0x80, observed at 0x1404f6166
+    vtbl[32] = &QueueProxyPresentX;  // +0x100, observed at 0x1404f60d3
+    return vtbl;
+}
+
+const auto kXboxCommandQueueProxyVtblV4 = BuildQueueProxyVtableV4();
+
 struct XboxD3D12DeviceProxy {
     const ComVtableFn* lpVtbl;
     std::atomic<uint32_t> ref_count{1};
+    uint32_t sdk_version = 0;
 #if defined(_WIN32)
     ID3D12Device* pc_device = nullptr;
     IDXGIAdapter1* pc_adapter = nullptr;
@@ -2709,6 +2831,18 @@ intptr_t SCARLETTX_GDK_CALLBACK DxgiDevProxyRelease(void* self, uintptr_t, uintp
     return static_cast<intptr_t>(rem);
 }
 
+XboxDXGIAdapterProxy* NewAdapterProxy(const XboxDXGIDeviceProxy* obj) {
+    auto* adapter_proxy = new XboxDXGIAdapterProxy();
+    adapter_proxy->lpVtbl = kXboxDXGIAdapterProxyVtbl.data();
+#if defined(_WIN32)
+    if (obj->parent_device && obj->parent_device->pc_adapter) {
+        adapter_proxy->pc_adapter = obj->parent_device->pc_adapter;
+        adapter_proxy->pc_adapter->AddRef();
+    }
+#endif
+    return adapter_proxy;
+}
+
 intptr_t SCARLETTX_GDK_CALLBACK DxgiDevProxyGetParent(void* self, uintptr_t riid, uintptr_t ppParent, uintptr_t) {
     auto* obj = static_cast<XboxDXGIDeviceProxy*>(self);
     auto** out = reinterpret_cast<void**>(ppParent);
@@ -2719,16 +2853,16 @@ intptr_t SCARLETTX_GDK_CALLBACK DxgiDevProxyGetParent(void* self, uintptr_t riid
         std::cerr << "[ScarlettX][d3d12_xs] XboxIDXGIDevice::GetParent("
                   << std::hex << g[0] << "-" << g[1] << "-" << g[2] << "-" << g[3] << std::dec << ") -> S_OK\n";
     }
-    auto* adapter_proxy = new XboxDXGIAdapterProxy();
-    adapter_proxy->lpVtbl = kXboxDXGIAdapterProxyVtbl.data();
-#if defined(_WIN32)
-    if (obj->parent_device && obj->parent_device->pc_adapter) {
-        adapter_proxy->pc_adapter = obj->parent_device->pc_adapter;
-        adapter_proxy->pc_adapter->AddRef();
-    }
-#endif
-    *out = adapter_proxy;
+    *out = NewAdapterProxy(obj);
     return 0;  // S_OK
+}
+
+// IDXGIDevice::GetAdapter (+0x38), observed at 0x1404f5274 in a title.
+intptr_t SCARLETTX_GDK_CALLBACK DxgiDevProxyGetAdapter(void* self, uintptr_t ppAdapter, uintptr_t, uintptr_t) {
+    auto** out = reinterpret_cast<void**>(ppAdapter);
+    if (!out) return static_cast<intptr_t>(0x80004003u);
+    *out = NewAdapterProxy(static_cast<XboxDXGIDeviceProxy*>(self));
+    return 0;
 }
 
 template <int Slot>
@@ -2754,6 +2888,7 @@ constexpr std::array<ComVtableFn, sizeof...(Is) + 3> MakeDxgiDevProxyVtable(std:
 std::array<ComVtableFn, 24> BuildDxgiDevProxyVtable() {
     auto vtbl = MakeDxgiDevProxyVtable(std::make_index_sequence<21>{});
     vtbl[6] = &DxgiDevProxyGetParent;  // IDXGIObject::GetParent (+0x30)
+    vtbl[7] = &DxgiDevProxyGetAdapter;
     return vtbl;
 }
 
@@ -2768,7 +2903,7 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyQueryInterface(void* self, uintptr_t riid, 
         std::cerr << "[ScarlettX][d3d12_xs] XboxID3D12Device::QueryInterface("
                   << std::hex << g[0] << "-" << g[1] << "-" << g[2] << "-" << g[3] << std::dec << ")\n";
     }
-    if (ProxyGuidEquals(riid, kIidIDXGIDevice)) {
+    if (ProxyGuidEquals(riid, kIidIDXGIDevice) || ProxyGuidEquals(riid, kIidIDXGIDevice1)) {
         auto* dxgi = new XboxDXGIDeviceProxy();
         dxgi->lpVtbl = kXboxDXGIDeviceProxyVtbl.data();
         dxgi->parent_device = obj;
@@ -2845,7 +2980,8 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateCommandQueue(void* self, uintptr_t pD
     }
     if (FAILED(hr) || !pc_q) return static_cast<intptr_t>(hr);
     auto* q_proxy = new XboxD3D12CommandQueueProxy();
-    q_proxy->lpVtbl = kXboxCommandQueueProxyVtbl.data();
+    q_proxy->lpVtbl = obj->sdk_version >= 0x20004u ? kXboxCommandQueueProxyVtblV4.data()
+                                                   : kXboxCommandQueueProxyVtbl.data();
     q_proxy->pc_queue = pc_q;
     q_proxy->pc_device = obj->pc_device;
     if (q_proxy->pc_device) q_proxy->pc_device->AddRef();
@@ -3126,7 +3262,7 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateCommandList(
     }
     if (FAILED(hr) || !pc_list) return static_cast<intptr_t>(hr);
     auto* proxy = new XboxD3D12GraphicsCommandListProxy();
-    proxy->lpVtbl = kXboxCmdListProxyVtbl.data();
+    proxy->lpVtbl = (obj->sdk_version >= 0x20004u ? kXboxCmdListProxyVtblV4 : kXboxCmdListProxyVtbl).data();
     proxy->pc_list = pc_list;
     proxy->pc_device = obj->pc_device;
     *out = proxy;
@@ -3536,6 +3672,8 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateCommittedResource(
     if (FAILED(hr) || !pc_res) return static_cast<intptr_t>(hr);
     auto* proxy = new XboxD3D12ResourceProxy();
     proxy->lpVtbl = kXboxResourceProxyVtbl.data();
+    proxy->device = obj;
+    obj->ref_count.fetch_add(1, std::memory_order_relaxed);
     proxy->pc_res = pc_res;
     proxy->tracked_state.store(static_cast<uint32_t>(pc_state), std::memory_order_relaxed);
     proxy->guest_format = orig_fmt;
@@ -3725,7 +3863,8 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateCommandListX(
     }
     if (FAILED(hr) || !pc_list) return static_cast<intptr_t>(hr);
     auto* proxy = new XboxD3D12GraphicsCommandListProxy();
-    proxy->lpVtbl = (type_raw == 16u) ? kXboxDmaCmdListProxyVtbl.data() : kXboxCmdListProxyVtbl.data();
+    proxy->lpVtbl = (type_raw == 16u) ? kXboxDmaCmdListProxyVtbl.data()
+                                      : (obj->sdk_version >= 0x20004u ? kXboxCmdListProxyVtblV4 : kXboxCmdListProxyVtbl).data();
     proxy->pc_list = pc_list;
     proxy->pc_device = obj->pc_device;
     if (TraceEnabled()) {
@@ -3943,6 +4082,7 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XboxCreateDevice(
         }
         auto* proxy = new XboxD3D12DeviceProxy();
         proxy->lpVtbl = kXboxDeviceProxyVtbl.data();
+        proxy->sdk_version = pParameters ? pParameters->Version : 0;
         proxy->pc_device = pc_dev;
         proxy->pc_adapter = adapter;  // transfers ownership
         *ppvDevice = proxy;

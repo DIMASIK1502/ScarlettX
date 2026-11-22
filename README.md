@@ -16,20 +16,20 @@
 | ![Concept Destruction main menu running in ScarlettX](docs/image_00_01.png) | ![Concept Destruction gameplay running in ScarlettX](docs/image_00_02.png) |
 | Max FPS: 1189<br>Average FPS: 1082<br>Minimum FPS: 264 | Max FPS: 247<br>Average FPS: 188<br>Minimum FPS: 91 |
 
-**Emulator Status:** `64.4%` (260 of 404 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `87.0%` (40 of 46 bring-up milestones) · **Exports:** `248` · **Tests:** `20/23` passing (failing: `test_d3d12_guest_texture`, `test_boot_hello_scarlett`, `test_boot_rt_showcase`) · **Target:** `Xbox Series X|S (Gen9)`
+**Emulator Status:** `66.6%` (281 of 422 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `87.0%` (40 of 46 bring-up milestones) · **Exports:** `269` · **Tests:** `25/25` passing · **Target:** `Xbox Series X|S (Gen9)`
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
 | **PE64 Loader & Auto-Stubs** | `Core` | `6 of 6` | `100%` | PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks |
+| **d3d12_xs → PC D3D12 & PSOs** | `Graphics` | `45 of 46` | `98%` | 44 exports + DXIL/DXBC container parser & Xbox-chunk stripper; root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache, WARP or hardware adapter |
 | **DirectStorage & XVD** | `Storage` | `23 of 24` | `96%` | 22 DStorage exports + unencrypted XVD parser/PackageVfs mounting; async worker queues, fence/status arrays, cancellation, synthetic LZ-RLE test codec |
 | **XTaskQueue & XAsync** | `xgameruntime` | `23 of 24` | `96%` | 15 XTaskQueue + 8 XAsync exports (manual/threadpool/delayed/monitors/cancel) |
-| **d3d12_xs → PC D3D12 & PSOs** | `Graphics` | `44 of 46` | `96%` | 43 exports + DXIL/DXBC container parser & Xbox-chunk stripper; root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache, WARP or hardware adapter |
+| **Networking (HTTP / XCurl)** | `Networking` | `38 of 40` | `95%` | 19 libHttpClient.GDK + 19 XCurl exports; deterministic offline mock registry, async callbacks, headers, fallback responses |
 | **XSystem & Runtime** | `xgameruntime` | `17 of 18` | `94%` | 17 exports; Scarlett Anaconda device info, runtime/analytics, handle validation |
 | **Input (GameInput)** | `Input` | `15 of 16` | `94%` | 15 exports; virtual Xbox Series controller & keyboard, reading history (Current/Next/Previous), state injection, 4-motor rumble state (stored, not sent to the host controller) |
-| **XGameSave (persistent)** | `xgameruntime` | `20 of 22` | `91%` | 20 exports; disk-backed containers, sync/async blob R/W, quota, delete |
 | **DXR / XboxBvhBuilder** | `Graphics` | `12 of 14` | `86%` | 8 BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, deterministic software BVH fallback (hardware DXR requires capable GPU) |
-| **Networking (HTTP / XCurl)** | `Networking` | `31 of 40` | `78%` | 19 libHttpClient.GDK + 12 XCurl exports; deterministic offline mock registry, async callbacks, headers, fallback responses |
-| **Audio (XAudio2 / AcpHal)** | `Media` | `23 of 32` | `72%` | 23 exports (XAudio2_9 ordinal #1 + AcpHal.dll APU/SHAPE shims); headless PCM mixer, WAV writer, fail-closed real-title COM guard, synthetic XMA2 test decoder |
+| **Audio (XAudio2 / AcpHal)** | `Media` | `33 of 42` | `79%` | 33 exports (XAudio2_9 ordinal #1 + AcpHal.dll APU/SHAPE shims); headless PCM mixer, WAV writer, fail-closed real-title COM guard, synthetic XMA2 test decoder |
+| **XGameSave (persistent)** | `xgameruntime` | `23 of 30` | `77%` | 23 exports; disk-backed containers, sync/async blob R/W, quota, delete |
 | **XMem & Threading** | `xgameruntime` | `11 of 16` | `69%` | 11 exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state |
 | **Middleware (Bink2 / FSR)** | `Middleware` | `22 of 34` | `65%` | 12 Bink2Scarlett + 10 amd_fidelityfx_loader/upscaler_xbox exports; deterministic offline HLE shims (synthetic RGBA/BGRA frames, bilinear upscale & hash) |
 | **XUser & Identity** | `xgameruntime` | `13 of 24` | `54%` | 13 exports; synthetic Xbox Live profile, XUID, gamertag components, privileges |
@@ -77,13 +77,13 @@ Testing against an unencrypted commercial Xbox Series X|S (`Scarlett`) Unity IL2
   - No `CmdList::Close` failure or device removal in gameplay runs.
   - On a hardware GPU (`--gpu`) the title plays at full speed: about 110 fps at 2,300 draw calls per frame and about 140 fps at 850, measured with `--stats`. An event ran from the countdown to the results screen. The software rasterizer of the first test machine managed about 2 to 3 fps.
 - **Known problems:** Alt+Enter switches the window to fullscreen and the picture then freezes on its last frame while the title keeps running (every `Present` fails with `DXGI_ERROR_INVALID_CALL`); pressing Alt+Enter again recovers it. The title's frame interval is accepted but not applied, so the frame rate is uncapped (the main menu ran between about 290 and 1,100 fps in different runs). Rumble is not forwarded to the host controller.
-- **Current classification:** **In-game** — one title is playable with keyboard or an Xbox controller at full speed on a hardware GPU, with sound and with progress saved between sessions; fullscreen and rumble do not work.
+- **Current classification:** **In-game** — **Concept Destruction** and **Unicorn Overlord** are playable on a hardware GPU; fullscreen and rumble do not work.
 
 ### Current Limitations
 
-- **Xbox COM vtable wrappers:** `d3d12_xs` guest-facing proxies cover what one title uses; other titles will hit unimplemented or unnamed slots. `XAudio2Create` returns guest-facing `IXAudio2`, source, submix and mastering voice objects (never a host COM pointer); they forward to the host XAudio2 2.9, or to a silent output when the host has no audio device. With the real title the sound is audible through the host output; effect chains are not passed to the host, and the silent output times every buffer as PCM.
+- **Xbox COM vtable wrappers:** `d3d12_xs` guest-facing proxies cover what **Concept Destruction** and **Unicorn Overlord** use; other titles will hit unimplemented or unnamed slots. `XAudio2Create` returns guest-facing `IXAudio2`, source, submix and mastering voice objects (never a host COM pointer); they forward to the host XAudio2 2.9, or to a silent output when the host has no audio device. With the real title the sound is audible through the host output; effect chains are not passed to the host, and the silent output times every buffer as PCM.
 - **Presentation:** the PresentX window has no fullscreen support (see the Alt+Enter problem above) and no frame pacing: `SetFrameIntervalX`, `ScheduleFrameEventX` and `WaitFrameEventX` succeed without waiting.
-- **Guest texture uploads:** texel data a title writes to a texture's address is uploaded once per presented frame, before the frame's first submit, so a later write reaches the host texture one frame late. `test_d3d12_guest_texture` fails on this: it rewrites a texture and expects the next submit to see the new data.
+- **Guest texture uploads:** texel data a title writes to a texture's address is uploaded once per presented frame, before the frame's first submit, so a later write reaches the host texture one frame late. Until the first frame is presented, every submit uploads.
 - **Child-process boot:** without `--in-process` the guest starts as a separate process. The emulator sets the shim directory as the DLL directory for that process, so the shims are found ahead of a host `C:\Windows\System32\xgameruntime.dll` (a Windows component on some Windows 11 builds). A DLL of the same name next to the guest executable still takes precedence over the shim.
 - **Unimplemented 0% subsystems:** Xbox unified memory (`MEM_GRAPHICS`, 64 KB / 4 MB physical-virtual aliasing) & full KernelX, precompiled RDNA2 `XS2` ISA lifting, encrypted retail `.xvc`/`.xvd` decryption, production GDeflate/BCPack/XMA2/Bink2/GPU FSR codecs, hardware DXR Tier 1.1 & Vulkan backend, and live XSAPI/WinRT services.
 - **Codecs, Middleware & Networking:** `Bink2Scarlett`, `amd_fidelityfx_*_xbox`, `dstorage_xs` decompression, `XMA2`, `libHttpClient.GDK`, and `XCurl` use deterministic offline/synthetic HLE shims for automated tests. Passing synthetic tests do not imply commercial retail title execution.

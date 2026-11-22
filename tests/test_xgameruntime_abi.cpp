@@ -375,9 +375,25 @@ int main() {
     CHECK(g_custom_allocs.load() == 1 && g_custom_frees.load() == 1);
     CHECK(XMemSetAllocationHooks(nullptr, nullptr) == XGR_S_OK);
 
-    void* vmem = XMemVirtualAlloc(nullptr, 65536, 0, 0);
+    void* vmem = XMemVirtualAlloc(nullptr, 65536, 0, 0, 0);
     CHECK(vmem != nullptr);
     std::memset(vmem, 0xAB, 4096);
+    CHECK(XMemVirtualFree(vmem, 0, 0) == true);
+
+    // The call a title makes: commit only, XMem flags 1, PAGE_READWRITE.
+    vmem = XMemVirtualAlloc(nullptr, 3 * 4096 + 1, 0x1000, 1, 0x04);
+    CHECK(vmem != nullptr);
+    std::memset(vmem, 0xCD, 4 * 4096);
+    CHECK(XMemVirtualFree(vmem, 0, 0) == true);
+
+    // Console page sizes: 64 KB (0x20400000) and 2 MB (0x20000000).
+    vmem = XMemVirtualAlloc(nullptr, 100, 0x20400000u | 0x3000, 1, 0x04);
+    CHECK(vmem != nullptr && (reinterpret_cast<uintptr_t>(vmem) & 0xFFFF) == 0);
+    std::memset(vmem, 0xEF, 0x10000);
+    CHECK(XMemVirtualFree(vmem, 0, 0) == true);
+    vmem = XMemVirtualAlloc(nullptr, 0x200001, 0x20000000u | 0x3000, 1, 0x04);
+    CHECK(vmem != nullptr && (reinterpret_cast<uintptr_t>(vmem) & 0x1FFFFF) == 0);
+    std::memset(vmem, 0x12, 0x400000);
     CHECK(XMemVirtualFree(vmem, 0, 0) == true);
 
     // 8. XThread
