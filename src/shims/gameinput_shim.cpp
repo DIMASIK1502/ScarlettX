@@ -267,6 +267,10 @@ intptr_t SCARLETTX_GI_CALL DevGetBatteryState(void*, uintptr_t out_state, uintpt
     return 0;
 }
 
+// The XInput slot of the host controller in use: found by ReadHostGamepad,
+// and where rumble is sent.
+std::atomic<uint32_t> g_host_pad_slot{0};
+
 // Slot 10 by the public GameInput.h order, which also has 18 device methods.
 // XInput only drives the two main motors; the trigger motors are dropped.
 intptr_t SCARLETTX_GI_CALL DevSetRumbleState(void*, uintptr_t params, uintptr_t, uintptr_t) {
@@ -291,7 +295,7 @@ intptr_t SCARLETTX_GI_CALL DevSetRumbleState(void*, uintptr_t params, uintptr_t,
         v.low = motor(p->LowFrequency);
         v.high = motor(p->HighFrequency);
     }
-    if (set_state) set_state(0, &v);
+    if (set_state) set_state(g_host_pad_slot.load(), &v);
 #else
     (void)params;
 #endif
@@ -456,15 +460,14 @@ void ReadHostGamepad(GAMEINPUT_GAMEPAD_STATE* out) {
     }();
     // The controller is not always in slot 0. Empty slots are slow to query,
     // so the others are only tried once a second.
-    static std::atomic<DWORD> pad{0};
     static std::atomic<ULONGLONG> next_scan{0};
     XInputStateBlock host{};
-    bool connected = get_state && get_state(pad.load(), &host) == 0;
+    bool connected = get_state && get_state(g_host_pad_slot.load(), &host) == 0;
     if (!connected && get_state && GetTickCount64() >= next_scan.load()) {
         next_scan.store(GetTickCount64() + 1000);
         for (DWORD i = 0; i < 4 && !connected; ++i) {
             connected = get_state(i, &host) == 0;
-            if (connected) pad.store(i);
+            if (connected) g_host_pad_slot.store(i);
         }
     }
     if (connected) {
@@ -510,6 +513,7 @@ void ReadHostGamepad(GAMEINPUT_GAMEPAD_STATE* out) {
         {VK_TAB, GAMEINPUT_GAMEPAD_VIEW},       {'P', GAMEINPUT_GAMEPAD_MENU},
     };
     for (const auto& k : kKeys) {
+        if (k.key == VK_RETURN && down(VK_MENU)) continue;
         if (down(k.key)) out->Buttons |= k.gameinput;
     }
     const auto stick = [&](int negative, int positive, float* value) {

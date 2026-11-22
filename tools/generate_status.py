@@ -320,7 +320,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             target=16,
             notes=(
                 f"{gi_cnt} exports; virtual Xbox Series controller & keyboard, reading history "
-                "(Current/Next/Previous), state injection, 4-motor rumble state (stored, not sent to the host controller)"
+                "(Current/Next/Previous), state injection, rumble forwarded to the host controller's two main motors"
             ),
         ),
         Subsystem(
@@ -455,7 +455,7 @@ def collect_concept_destruction_metrics() -> list[Subsystem]:
             category="Graphics",
             implemented=4,
             target=5,
-            notes="PresentX window on its own thread, real 1920x1080 frames; on a hardware GPU about 105 fps at 2,400 draws per frame; the title's frame interval is ignored (uncapped) and Alt+Enter fullscreen freezes the picture",
+            notes="PresentX window on its own thread, real 1920x1080 frames; on a hardware GPU about 105 fps at 2,400 draws per frame; Alt+Enter toggles borderless fullscreen; the title's frame interval is ignored (uncapped)",
         ),
         Subsystem(
             name="Audio & Input (Runtime)",
@@ -463,7 +463,7 @@ def collect_concept_destruction_metrics() -> list[Subsystem]:
             category="Media",
             implemented=3,
             target=4,
-            notes="Guest-facing XAudio2 objects forwarding to the host XAudio2 2.9, sound audible in play; GameInput polling verified for A, B, D-pad, left stick, right trigger, and with a real Xbox controller; rumble is not forwarded to the controller",
+            notes="Guest-facing XAudio2 objects forwarding to the host XAudio2 2.9, sound audible in play; GameInput polling verified for A, B, D-pad, left stick, right trigger, and with a real Xbox controller; rumble reaches the controller",
         ),
         Subsystem(
             name="In-Game & Playable",
@@ -989,8 +989,8 @@ def main() -> None:
         badges=cd_badges,
         heading_prefix="Status of the game Concept Destruction",
         callout_lead="Open issues:",
-        callout_line1="Alt+Enter fullscreen freezes the picture; frame pacing is uncapped; rumble is not sent",
-        callout_line2="to the controller; CmdList slot 67 is unimplemented.",
+        callout_line1="Frame pacing is uncapped (the title's frame interval is not applied);",
+        callout_line2="CmdList slot 67 is unimplemented.",
     )
 
     html_doc = render_html(subsystems, total_exports, tests_text, tests_ok)
